@@ -4,7 +4,7 @@
  
  Full code and computational analysis to reproduce the results in this paper : S1 and S2 Computational Analysis
  
- All the data are availbes on : https://content.cruk.cam.ac.uk/fmlab/sivakumar2016/
+ All the data are availables on : https://content.cruk.cam.ac.uk/fmlab/sivakumar2016/
  
  
  S1 Computational Analysis:
