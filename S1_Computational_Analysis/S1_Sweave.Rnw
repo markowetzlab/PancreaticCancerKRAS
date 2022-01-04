@@ -1,0 +1,1539 @@
+% SUPPLEMENTARY MATERIAL
+% !Rnw weave = knitr
+% -*-coding:latin-1-*-
+\documentclass{article}
+<<style, eval=TRUE, echo=FALSE, results='asis'>>=
+BiocStyle::latex()
+@ 
+\usepackage{url}
+\usepackage{gensymb}
+\usepackage{todonotes}
+\usepackage[round]{natbib}
+\usepackage[colorlinks=false, linktocpage=true]{hyperref} % must be last
+\usepackage{float}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% START
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\title{Supporting Information for --Kras-associated regulatory hubs in pancreatic cancer--}
+\date{\today}
+\begin{document}
+
+<<include=FALSE>>=
+#Pancreatic cancer and KRAs - Master Regulator Analysis with over 600 cases and network fusion ~(2015)
+opts_chunk$set(concordance=TRUE)
+opts_knit$set(verbose=TRUE)
+@
+
+<<include=FALSE>>=
+opts_chunk$set(concordance=TRUE)
+@
+
+\maketitle
+
+
+%%%% TOC
+\thispagestyle{empty}
+\tableofcontents
+\clearpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section*{Description}
+
+This document contains a set of documentation, R code, results and datasets to fully reproduce the analysis and results of the correspondent publication. The full documentation is split into three parts: 
+\begin{itemize}
+\item{Part I: Data Pre-processig: Pre-processing of gene expression data.} 
+\item{Network inference, network fusion and identification of master regulators of KRAS response.}
+\item{tumor subtype, survival, and mutational anlaysis}
+\end{itemize}
+
+We first declare a function that will check if the data required for the analysis is within the working directory of the Sweave file:
+<<message=FALSE>>=
+#check directory structure
+dataPath <- file.path(getwd(),"data/")
+codePath <- file.path(getwd(),"code/")
+depPath <-  file.path(getwd(),"dependencies/") 
+
+#Download the data if if does not exist already
+if (!file.exists(dataPath)) { dir.create(dataPath) }
+if (!file.exists(codePath)) { dir.create(codePath) }
+if (!file.exists(depPath)) { dir.create(depPath) }
+
+site <- "http://markowetzlab2.cruk.cam.ac.uk/sivakumar2016/KRAS-MasterRegulators-S1/"
+fnames <- c("dependencies/hgu133plus2hsentrezg.db_19.0.0.tar.gz",
+            "dependencies/hgu133plus2hsentrezgcdf_19.0.0.tar.gz",
+            "dependencies/hgu133plus2hsentrezgprobe_19.0.0.tar.gz",
+            "dependencies/RTN_1.13.2.tar.gz",
+            "code/KRAS-master-regulators-S1_functions.R",
+            "data/figure2B.png",
+            "data/GexpMatricesConverted.RData",
+            "data/KRAS-master-regulators-S1_data(1).RData",
+            "data/MyTable_GEOdata.txt",
+            "data/PreComputedCombNet.RData",
+            "data/PreComputedKRASnullmodel.RData",
+            "data/PreComputedKRASsig.RData",
+            "data/PreComputedKRASsigPathway.RData",
+            "data/PreComputedMRspathwayAnlaysis.RData",
+            "data/PreComputedNetworks.RData",
+            "data/TCGASeqcounts.RData",
+            "data/PreComputedTCGAfreqmutadata.RData",
+            "data/PreComputedvipermat.Rdata",
+            "data/PreComputed3com.RData")
+
+for (f in fnames) {
+    if (!file.exists(file.path(getwd(),f))) {
+      download.file(file.path(site,f),file.path(getwd(),f),"curl") 
+    }
+}
+@
+
+<<>>=
+#Load the package manager function
+source("code/KRAS-master-regulators-S1_functions.R")
+
+#download the data used for the analysis in this document
+load("data/KRAS-master-regulators-S1_data(1).RData")
+@
+
+Load the libraries and data that we utilise for the analyses.
+
+<<, echo=FALSE>>=
+pkgTest <- function(x, repos="http://cran.rstudio.com/", tar=NULL)
+{
+  if (!is.null(repos)) {
+      if (!require(x,character.only = TRUE)){install.packages(x,dep=TRUE,repos=repos)}
+  }
+  
+  if (is.null(repos) & !is.null(tar)) {
+    if (!require(x,character.only = TRUE)){
+      install.packages(tar, repos=NULL, type="source")
+      x <- tar
+    }
+  }
+  
+  if (is.null(repos) & is.null(tar)) {stop("cannot install tar file")}
+  
+  if(!require(x,character.only = TRUE))
+    {
+      source("http://bioconductor.org/biocLite.R")
+      biocLite(x)
+      if(!require(x,character.only = TRUE)) stop("Package not found")
+    }
+}
+@
+
+<<message=F, warning=FALSE>>=
+pkgTest("AnnotationDbi")
+pkgTest("org.Hs.eg.db")
+pkgTest("hgu133plus2hsentrezg.db", tar="dependencies/hgu133plus2hsentrezg.db_19.0.0.tar.gz", repos=NULL)
+pkgTest("hgu133plus2hsentrezgcdf", tar="dependencies/hgu133plus2hsentrezgcdf_19.0.0.tar.gz", repos=NULL)
+pkgTest("hgu133plus2hsentrezgprobe", tar="dependencies/hgu133plus2hsentrezgprobe_19.0.0.tar.gz", repos=NULL)
+Packages <- c("affy","affyPLM","knitr","sva","made4","devtools","xtable","Rsubread","igraph","reshape2","limma","biomaRt","corpcor", "fdrtool","viper","RedeR","ggplot2","gridExtra","pheatmap","HTSanalyzeR","org.Mm.eg.db","org.Hs.eg.db","GO.db","KEGG.db","snow","cluster","survival","rms", "sigPathway","RColorBrewer","clusterProfiler","ReactomePA")
+out <- sapply(Packages, pkgTest)
+pkgTest("RTN", tar="dependencies/RTN_1.13.2.tar.gz", repos=NULL)
+@
+
+\clearpage
+
+\part{Data Pre-processing}
+
+\section{Data source and download}
+
+\subsection{Data description}
+
+Raw gene expression data files were obtained from Gene Expression Omnibus (GEO) (Edgar et al., 2002) for a total of five independent pancreatic-related studies. All five downloaded data sets were generated on Affymetrix GeneChip® Human Genome U133 Plus 2.0 array. 
+Additionally, we obtained microarray gene expression data from the ICGC project for 242 primary PDAC tumors (Bailey et al., 2016). Microarray data for the ICGC dataset was generated on Illumina HumanHT-12 v4.0 beadchip. The Lumi normalisation algorithm was applied using bgAdjust.affy quantile log2 as per the manifest. 
+Finally, we used a total of 178 Pancreatic adenocarcinoma Primary Solid Tumor RNA-seq gene expression data from the TCGA consortium. TCGA data was downloaded from CGHub. 
+
+<<xtable1, results='asis', echo=FALSE>>=
+
+library(xtable)
+myTable <- read.delim("data/MyTable_GEOdata.txt")
+xtab<-xtable(myTable)
+print(xtab, floating=FALSE)
+@
+\caption{Table 1: Overview of the expression profiling datasets selected for the QC and Network analysis. For the Network analysis only the PDAC tumor datasets were used. *https://expo.intgen.org/geo/home.do}
+\vspace{2 mm}
+
+\subsection{TCGA data access}
+
+To download the TCGA data, we used gtdownload command line tool version 3.8.7-45 downloaded from \url{https://cghub.ucsc.edu/software/downloads.html} (GeneTorrent-3.8.7-45.pkg). The metadata file ("manifest.xml") for 178 RNA-seq cases was accessed from the CGHub Data Browser in August 2015 \url{https://browser.cghub.ucsc.edu}. 
+The following search filters were used:
+\begin{framed}
+Found 178 results.
+Applied filter(s):
+
+    \begin{itemize}
+    \item{Assembly: GRCh37/HG19 (GRCh37 OR GRCh37-lite OR GRCh37\_BI\_Variant OR GRCh37-lite-+-HPV\_Redux-build OR GRCh37-lite\_WUGSC\_variant\_1 OR GRCh37-lite\_WUGSC\_variant\_2 OR HG19 OR HG19\_Broad\_variant OR HS37D5), GRCh37, GRCh37-lite, GRCh37\_BI\_Variant, GRCh37-lite-+-HPV\_Redux-build, GRCh37-lite\_WUGSC\_variant\_1, GRCh37-lite\_WUGSC\_variant\_2, HG19, HG19\_Broad\_variant, HS37D5}
+    \item{Disease: Pancreatic adenocarcinoma (PAAD)}
+    \item{Study: TCGA (phs000178), CCLE (*Other\_Sequencing\_Multiisolate)}
+    \item{Sample Type: Primary Solid Tumor (01 OR TARGET\_01)}
+    \item{State: Live (live)}
+    \item{Library Type: RNA-Seq}
+    \end{itemize}
+\end{framed}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage 
+
+\section{Pre-processing Affymetrix array data}
+
+\subsection{Libraries for processing Affymetrix array data}
+
+The affy objects used in this session depend on the CDF package \Rpackage{hgu133plus2hsentrezgcdf}. Both, the probe sequence mapping file and the custom CDF package can be downloaded from the website 
+\url{http://brainarray.mbni.med.umich.edu/brainarray/Database/CustomCDF/genomic_curated_CDF.asp}
+
+In detail, we used the custom CDF package for the HGU133Plus2 platform (version 19.0.0) that can be downloaded here:
+\begin{itemize}
+\item{\url{http://brainarray.mbni.med.umich.edu/Brainarray/Database/CustomCDF/19.0.0/entrezg.asp}}
+\end{itemize}
+The source file for the corresponding R package can be downloaded here:
+\begin{itemize}
+\item{\url{http://mbni.org/customcdf/19.0.0/entrezg.download/hgu133plus2hsentrezgcdf_19.0.0.tar.gz}}
+\end{itemize}
+And the qcdef files were obtained from:
+\begin{itemize}
+\item{\url{http://web.mit.edu/r/r_v3.0.1/lib/R/library/simpleaffy/extdata/hgu133plus2cdf.qcdef}}
+\end{itemize}
+
+\subsection{Probe quality control}
+
+Quality control (QC) analysis was performed for every independent study to identify problematic arrays. QC analysis was performed using \Biocpkg{affy} and \Biocpkg{affyPLM} Bioconductor R packages (Gautier et al., 2004). 
+Firstly, we create an array object per gene
+
+<<Array object per gene, cache=TRUE>>=
+
+#Studies analysed:
+table(GEOannot[,"tissue"], GEOannot[,"study"])
+
+#affy object per study
+GEObatchlist
+@
+
+The \Biocpkg{affyPLM} package fits probe-level robust regressions (probe-level model, PLM) to obtain probe-set summaries. The Relative Log Expression (RLE) and the Normalized Unscaled Standard Error (NUSE) were derived from the PLM and used to quantitatively access array quality.
+
+<<QCmetrics, cache=TRUE>>=
+#probe-level metric calculations per study 
+library(affyPLM)
+PLMlist <- lapply(GEObatchlist,fitPLM)
+@
+
+The Relative Log Expression (RLE) values are computed for each probe-set in the array by calculating the ratio between the expression of a probe-set and the median expression of each probe-set across all arrays of the experiment. Since most probes are not expected to change across the arrays, the distribution of these log-ratios should be similar in range and be centered around 0. 
+
+NUSE values represents the individual probe standard error (SE) from the PLM fit. The SE values are normalised at the probe-level across the arrays so that the distribution of SE values across all arrays should be centered around 1. 
+
+A boxplot of RLE and NUSE values is represented for each array in each study in the figures below:
+
+<<QCmetrics_RLE, cache=TRUE, fig.height=8, fig.width=5, fig.align='center'>>=
+par(mfrow=c(5,2), mar=c(2,2,2,2))
+outliers=list()
+outliers[["Badea08"]] <- plotQC_perstudy("Badea08",PLMlist[["Badea08"]],GEOannot)
+legend("topleft",c("Normal","Tumor"),col=c("red","darkblue"),pch=15)
+outliers[["Collisson11"]] <- plotQC_perstudy("Collisson11",PLMlist[["Collisson11"]],GEOannot)
+legend("topleft",c("Normal","Cell line"),col=c("red","purple"),pch=15)
+outliers[["Donahue12"]] <- plotQC_perstudy("Donahue12",PLMlist[["Donahue12"]],GEOannot)
+legend("topleft",c("Normal","Tumor"),col=c("red","darkblue"),pch=15)
+outliers[["expO05"]] <- plotQC_perstudy("expO05",PLMlist[["expO05"]],GEOannot)
+outliers[["Pei09"]] <- plotQC_perstudy("Pei09",PLMlist[["Pei09"]],GEOannot)
+legend("topleft",c("Normal","Tumor"),col=c("red","darkblue"),pch=15)
+@
+\begin{center}
+\begin{figure}[H]
+\caption{RLE and NUSE distributions for the seven cohorts of PDAC gene expression profiling used.}
+\end{figure}
+\end{center}
+
+\clearpage
+
+The boxplots allowed checking the following: 
+\begin{enumerate}
+\item{If all distributions have RLE and NUSE values centered near 0 and 1, respectively}
+\item{If there is any array with an higher spread of NUSE or RLE values than that of other arrays from the same experiment.}
+\end{enumerate}
+
+We used the RLE threshold of 0.15 and a NUSE threshold of 1.1 to identify outliers. A total of 5 arrays were identified as outliers:
+
+<<bad arrays, cache=TRUE>>=
+RLE_bad <- unlist(sapply(outliers, function(x) {return(x$RLE_bad)}))
+NUSE_bad <- unlist(sapply(outliers, function(x) {return(x$NUSE_bad)}))
+arrays_to_delete <- unique(c(RLE_bad,NUSE_bad))
+
+library(knitr)
+kable(GEOannot[RLE_bad,])
+kable(GEOannot[NUSE_bad,])
+@
+
+Since the downstream analysis will only focus on PDAC data, only 1 array (GSM446752.CEL.gz from Collisson et al., 2011) was actually excluded from downstream analysis
+
+<<remove bad arrays, cache=TRUE>>=
+
+#remove bad arrays and take only the PDAC tumors
+batchlist.clean <- lapply(names(GEObatchlist), function(study) {
+  annot <- GEOannot_per_study[[study]]
+  dataAffy <- GEObatchlist[[study]]
+  names <- rownames(annot)[annot[,"tissue"] == "PDAC"]
+  dataPDAC <- dataAffy[,names] 
+  if (any(sampleNames(dataPDAC) %in% arrays_to_delete)) {
+    badArray <- as.numeric(na.omit(match(arrays_to_delete, sampleNames(dataPDAC))))
+    print (paste0("removed array from ", study, ": ", colnames(dataPDAC)[badArray]))
+    return(dataPDAC[, -badArray])
+  }else{
+    return(dataPDAC)
+  }
+})
+names(batchlist.clean) <- names(GEObatchlist)
+@
+
+\subsection{Normalisation}
+
+For each of the five cohorts, the resulting matrix was processed using the custom CDF version 19 (http://brainarray.mbni.med.umich.edu/brainarray/) and RMA (Robust Multichip Averaging) (Irizarry et al. 2003) normalisation in R (www.r-project.org). 
+
+<<normalisedMatrix1, results='hide', warning=FALSE, cache=TRUE>>=
+eset <-lapply(batchlist.clean, rma)
+@
+
+<<normalisedMatrix2,  fig.height=7, fig.width=4.5, fig.align='center', cache=TRUE>>=
+# Plot Not-normalized vs Normalized CEL files
+par(mfrow=c(5,2), mar=c(2,2,2,2))
+for (study in names(batchlist.clean)) {
+  boxplot(batchlist.clean[[study]], main=paste(study, "before RMA"))
+  boxplot(eset[[study]], main=paste(study,"after RMA"))
+}
+@
+\begin{center}
+\begin{figure}[H]
+\caption{Distribution of probe intensity scores before and after RMA normalisation.}
+\label{fig:normalisedMatrix2}
+\end{figure}
+\end{center}
+
+\subsection{Probe annotation}
+
+We converted all probe IDs to Entrez ids using the standard "db" file for the Human U133 Plus 2.0 affymetrix array. We filtered the final expression matrix so that it contained only probes for which there was an correspondent Entrez gene ID.
+
+<<subset_gexp, cache=TRUE>>=
+ex <- lapply(eset, exprs)
+geneIDs <- lapply(ex, getGeneExpIDs)
+
+#any dups?
+for (gene.IDs in geneIDs) {
+  NrNAs = sum(is.na(gene.IDs[,2]))
+  NrDups = sum(duplicated(gene.IDs[!(is.na(gene.IDs[,2])),2]))
+  print (paste("there are", nrow(gene.IDs), "probe,gene IDs"))
+  print (paste("there are", NrNAs, "geneIDs without any ENTREZ symbol"))
+  print (paste("there are", NrDups, "duplicated geneIDs"))
+}
+
+ex <- lapply(eset, exprs)
+lapply(ex, dim)
+
+GEOArray.Gexp <- lapply(ex, function(x) {
+  ids <- getGeneExpIDs(x)
+  cv.filter(x, ids)
+})
+lapply(GEOArray.Gexp, function(x) {dim(x[[1]])})
+
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Processing ICGC array data}
+
+\subsection{Preparing the gene expression matrix}
+
+We combined all normalised gene expression values in a matrix:
+
+<<>>=
+head(ICGCbatchinfo)
+ICGCGexp[1:10,1:10]
+dim(ICGCGexp)
+@
+
+\subsection{Batch effect removal}
+
+To remove mild inter-study effects ComBat algorithm implemented in the \Biocpkg{sva} R package was used. \Rfunction{ComBat} is a popular approach to remove batch effects developed by Johnson et al., 2007. 
+
+First, we combined the information between batch numbers and array IDs:
+<<>>=
+library(sva)
+library(made4)
+batches <- factor(ICGCbatchinfo$BATCH[match(colnames(ICGCGexp), ICGCbatchinfo$biospecimen_id)])
+@
+
+<<combat, cache=TRUE>>=
+ex.combat <- ComBat(dat=ICGCGexp,batch=batches, mod=NULL)
+@
+
+We performed a PCA (Principal Components Analysis) to understand if there were any remaining batch effects in the data. 
+
+<<pcs, cache=TRUE, fig.align='center', fig.width=8, fig.height=4>>=
+gTypeCols <- rainbow(length(unique(batches)))
+
+par(mfrow=c(1,2))
+fit <- princomp(ICGCGexp, cor=TRUE)
+plot(fit$loadings[,1], fit$loadings[,2], 
+     col=gTypeCols[batches],pch=19,
+     xlab="PC1 loadings",
+     ylab="PC2 loadings",
+     main="Before ComBat")
+legend("topright", legend = levels(batches), 
+       col = gTypeCols, lty = 1, lwd = 5, 
+       cex = 0.5)
+
+fit2 <- princomp(ex.combat, cor=TRUE)
+plot(fit2$loadings[,1], fit2$loadings[,2], 
+     col=gTypeCols[batches],pch=19,
+     xlab="PC1 loadings",
+     ylab="PC2 loadings",
+     main="After ComBat")
+legend("topright", legend = levels(batches), 
+       col = gTypeCols, lty = 1, lwd = 5, 
+       cex = 0.5)
+@
+\begin{center}
+\begin{figure}[H]
+\caption{Principal components analysis (PCA) of gene expression data from the ICGC cohort before and after batch adjustment with ComBat algorithm}
+\label{fig:pcs}
+\end{figure}
+\end{center}
+
+\subsection{Probe annotation}
+
+We downloaded a table of Illumina IDs (PROBEID, ENTREZ, SYMBOL) from \url{http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GPL10558}
+
+<<get probe IDs>>=
+head(ICGCprobeinfo)
+@
+
+all 47,265 probe IDs in the gene expression table are in the \texttt{ICGCprobeinfo} file
+<<>>=
+all(ICGCprobeinfo$ID %in% rownames(ICGCGexp))
+all(rownames(ICGCGexp) %in% ICGCprobeinfo$ID)
+length(rownames(ICGCGexp))
+dim(ICGCprobeinfo)
+@
+
+We checked that there were no duplicated probeIDs in the table
+<<>>=
+any(duplicated(ICGCprobeinfo$PROBEID))
+@
+
+However, there are some probes that correspond to duplicated ENTREZ IDs
+<<>>=
+any(duplicated(ICGCprobeinfo$ENTREZ[!(is.na(ICGCprobeinfo$ENTREZ))]))
+@
+
+We filtered the final expression matrix so that it contained only probes for which there was an correspondent Entrez gene ID, and duplicated IDs were filtered out so that the ID with the highest coefficient of variation is kept
+ 
+<<subsetGrimmondArray, cache=TRUE>>=
+ICGCArray.Gexp <- cv.filter(ICGCGexp, ICGCprobeinfo)
+dim(ICGCGexp)
+dim(ICGCArray.Gexp[[1]])
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Processing TCGA data}
+
+\subsection{Gene counts}
+
+We used \Biocpkg{Rsubread} package to count the reads in genes. \Biocpkg{Rsubread} has a number of built-in annotations that we can make use of. 
+
+\Rfunction{featureCounts} will use the in-built SAF-format annotation file.  By default, the annotations (each row is a feature) are grouped into meta-features using their values in the \texttt{GeneID} column. We used the default arguments for read summarisation:
+
+\begin{itemize}
+\item allowMultiOverlap=FALSE: reads are only allowed to be assigned to only 1 feature (or meta-feature)
+\item isPairedEnd=FALSE. Individual reads are counted instead of read-pairs
+\item strandSpecific=0. Does not preform strand-specific read counting
+\item minMQS=0.  integer giving the minimum mapping quality score a read must satisfy in order
+to be counted.
+\item countMultiMappingReads=FALSE. This function uses "NH" tag to find multiple mappings. When set to FALSE multi-mapping reads/fragments are not counted
+\item ignoreDup=FALSE. Reads marked as duplicates are not featureCounts ignored
+\item nthreads=5. Number of threads used for running the function
+\end{itemize}
+
+\subsection{Transforming TCGA RNA-seq data}
+
+We saved the R objects needed for further analysis (TCGASeqcounts and hg19\_annot\_SAF) in a RData file named "TCGASeqcounts.RData" (available in the "data" directory).
+
+<<>>=
+load("data/TCGASeqcounts.RData")
+@
+
+In RNA-Seq data, genes with larger average expression have on average larger observed variances across samples, that is, they vary in expression from sample to sample more than other genes with lower average expression. This phenomena is known as data heteroscedasticity. 
+This effect is clearly visible when we plot the per-gene standard deviation (taken across the 178 samples), against the rank of the average expression. The plot below was taken by using the meanSdPlot function from the \Biocpkg{vsn} package and demonstrates the mean-variance dependency clearly. 
+
+RNA sequencing data was transformed with variance-stabilizing transformation (VST) method. VST for RNA-seq data was purposed by Anders and Huber, 2010 and it is implemented in the \Biocpkg{DESeq2} package. 
+
+<<VST1, cache=TRUE, warning=FALSE, message=FALSE>>=
+library(DESeq2)
+library(vsn)
+TCGASeqcounts$vsd <-varianceStabilizingTransformation(TCGASeqcounts$counts, blind=TRUE)
+@
+
+After VST the standard deviation becomes more constant along the whole dynamic range, but there are still unequal for all genes.
+
+<<meanSdPlot, cache=TRUE, fig.width=7, fig.height=3, fig.align='center', fig.show='hide', warning=FALSE, message=FALSE>>=
+library(ggplot2)
+library(gridExtra)
+msd1 <- meanSdPlot(as.matrix(TCGASeqcounts$counts), plot=FALSE)
+msd1 <- msd1$gg + ggtitle("TCGA:counts") + scale_y_continuous(limits = c(0, 8e3)) 
+msd2 <- meanSdPlot(as.matrix(TCGASeqcounts$vsd),plot=FALSE)
+msd2 <- msd2$gg + ggtitle("TCGA:VST") 
+grid.arrange(msd1, msd2, ncol=2)
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/meanSdPlot-1.pdf}
+\caption{Per-gene standard deviation (taken across samples) against the rank of the mean for the PDAC TCGA datasets. Data variance depends on the mean value, i.e. genes having larger mean expression values also have larger variances}
+\label{meanSdPlot}
+\end{center}
+\end{figure}
+
+
+\section{Saving the data}
+
+The final gene expression matrices were saved as RData objects:
+<<save final, eval=FALSE>>=
+TCGAseq.Gexp <- TCGASeqcounts$vsd
+ICGCarray.Gexp <- ICGCArray.Gexp$gexp
+Badea08.Gexp <- GEOArray.Gexp[["Badea08"]]$gexp
+Collisson11.Gexp <- GEOArray.Gexp[["Collisson11"]]$gexp
+Donahue12.Gexp <- GEOArray.Gexp[["Donahue12"]]$gexp
+expO05.Gexp <- GEOArray.Gexp[["expO05"]]$gexp
+Pei09.Gexp <- GEOArray.Gexp[["Pei09"]]$gexp
+#save(TCGAseq.Gexp, ICGCarray.Gexp, Badea08.Gexp, Collisson11.Gexp, Donahue12.Gexp,
+#     expO05.Gexp, Pei09.Gexp, file="data/GexpMatricesConverted.RData")
+@
+
+We provide the pre-computed R objects in the "data" directory: 
+<<>>=
+load("data/GexpMatricesConverted.RData")
+@
+
+\clearpage
+
+\part{Master Regulator Analysis}
+
+\section{Network inference and analysis}
+
+\subsection{Transcription network inference pipeline}
+
+Network inference was done by co-expression analysis: if two genes show similar expression profiles across samples, they are supposed to share a regulatory relationship. We used partial correlations to infer rthe co-regulatory relationship between any two genes conditioned on all remaining genes  
+
+We implemented the R code in the R package \Biocpkg{RTN} Version 1.11.1: \textit{reconstruction of transcriptional networks and analysis of master regulators} (Fletcher et al., 2013; Castro et al., 2016), which is designed for the reconstruction of transcriptional networks. The pipeline is run in three steps (i) Check the consistency of the input data and remove non-informative genes (ii) compute partial correlations (iii) compute the significance of partial correlation scores.
+
+\subsubsection{Check the consistency of the input data and remove non-informative probes}
+The first step is to create an object of class TNI to be used with methods developed in RTN. To run RTN you will need gene expression dataset and a list of transcription factors or regulators. The list of transcription factors  used in this study was  derived  from  that  used  in  a  previous  ARACNe/MRA publication (Carro et al., 2010) by  converting  Affymetrix  probe  IDs  into  the  matching Entrez IDs. 
+
+We have done this for all seven PDAC cohorts used in this study:
+<<, eval=FALSE>>=
+Badea08.rtni <- new("TNI", gexp=Badea08.gexp, transcriptionFactors=tfs)
+Collisson11.rtni <- new("TNI", gexp=Collisson11.gexp, transcriptionFactors=tfs)
+Donahue12.rtni <- new("TNI", gexp=Donahue12.gexp, transcriptionFactors=tfs)
+expO05.rtni <- new("TNI", gexp=expO05.gexp, transcriptionFactors=tfs)
+Pei09.rtni <- new("TNI", gexp=Pei09.gexp, transcriptionFactors=tfs)
+ICGCArray.rtni <- new("TNI", gexp=ICGCArray.gexp, transcriptionFactors=tfs)
+TCGASeq.rtni <- new("TNI", gexp=TCGASeq.gexp, transcriptionFactors=tfs)
+@
+
+Secondly, just as described in the \Biocpkg{RTN} package documentation, the generic function \Rfunction{tni.preprocess} is used to run several checks on the input data. At this step, RTN will check if gene symbols are consistently matched between the input datasets, and will  filter  out  genes  that  exhibit  low  coefficient of  variation  (CV),  below  the  CV  median  value. 
+
+<<,eval=FALSE>>=
+Badea08.rtni <- tni.preprocess(Badea08.rtni)
+Collisson11.rtni <- tni.preprocess(Collisson11.rtni)
+Donahue12.rtni <- tni.preprocess(Donahue12.rtni)
+expO05.rtni <- tni.preprocess(expO05.rtni)
+Pei09.rtni <- tni.preprocess(Pei09.rtni)
+ICGCArray.rtni <- tni.preprocess(ICGCArray.rtni)
+TCGASeq.rtni <- tni.preprocess(TCGASeq.rtni)
+@
+
+\subsubsection{Partial correlation computation}
+
+The function \Rfunction{tni2tpc.corpcor} was used to infer the transcriptional networks using partial correlations. This function works as a wrapper around the \Rfunction{pcor.shrink} function from the \Rpackage{corpcor} package, originally developed by Korbinian Strimmer's lab (Sch\"afer and Strimmer 2005; Opgen-Rhein and Strimmer 2007).
+Within the RTN wrapper \Rfunction{tni2tpc.corpcor}, the shrinkage function used to estimate the partial correlation matrix is \Rfunction{pcor.shrink} with default parameters. Firstly the shrinkage estimates of partial correlation are computed for each gene-gene pair. Then, a subset of the symmetric matrix is removed to only consider TF-gene partial correlation estimates. 
+
+<<, eval=FALSE>>=
+Badea08.rtni <- tni2tpc.corpcor(Badea08.rtni)
+Collisson11.rtni <- tni2tpc.corpcor(Collisson11.rtni)
+Donahue12.rtni <- tni2tpc.corpcor(Donahue12.rtni)
+expO05.rtni <- tni2tpc.corpcor(expO05.rtni)
+Pei09.rtni <- tni2tpc.corpcor(Pei09.rtni)
+ICGCArray.rtni <- tni2tpc.corpcor(ICGCArray.rtni)
+TCGASeq.rtni <- tni2tpc.corpcor(TCGASeq.rtni)
+@
+
+Due to the large-scale datasets and the computing power required to compute the transcription
+networks, we provide 7 pre-computed networks R object:
+
+<<loadNetworks>>=
+load("data/PreComputedNetworks.RData")
+@
+
+\subsubsection{Calculation of False discovery rates}
+
+The significance of each partial correlation score is the last step within the \Rfunction{tni2tpc.corpcor} function. This step makes use of the \Rfunction{fdrtool} of the \Rpackage{fdrtool} package. The \Rpackage{fdrtool} package allows to estimate null values and the parameters of the null distribution for a variety of null models (p-values, z-scores, correlation coefficients, t-scores) (Strimmer 2008). 
+The obtained RTN \texttt{TPC-Class} object contains the unfiltered edges with the corresponding p-values, q-values and probablity estimates as calculated with the \Rfunction{fdrtool} function.
+It is possible to apply a desired threshold to count how many significant edges exist in each network:
+
+<<countedges, cache=TRUE>>=
+#how many are significant based on FDR cutoff Q=0.05?
+a <- sapply(allNetworks, tpc.countedges, cutoff.method="qval", cutoff.tr=0.05, verbose=TRUE)
+
+#how many are significant based on prob > 0.9 (i.e. local fdr < 0.1)?
+a <- sapply(allNetworks, tpc.countedges, cutoff.method="prob", cutoff.tr=0.9, verbose=TRUE)
+@
+
+\subsection{Network fusion}
+
+We combined the 7 derived networks by using the Stouffer's Z-score method (Stouffer et al., 1949). This method is based on the average of the Z-score values and allows for incorporation of sample sizes as the study weights. If the i\_{th} Z\-score is weighted by w\_{i}, then the meta-analysis Z\-score is:
+
+\begin{equation}
+Z \sim \frac{\sum_{i=1}^k w_iZ_i}{\sqrt{\sum_{i=1}^k w_i^2}},
+\end{equation}
+
+which follows a standard normal distribution under the null hypothesis.
+
+Because in our study partial correlation scores can be either positive or negative, we use the two-sided p-value in the calculation of the Z\_{i}. The two-sided p-value is equal to p\_{i}/2, and the associated Z\-score is:
+
+\begin{equation}
+Z_i=\phi - 1(1 - p_i/2)
+\end{equation}
+
+To compute the fused Network we used the R function \Rfunction{tpc.fuseNetwork} from the R package \Biocpkg{RTN}. This function computes the combined Z-score for the overall meta-analysis, and makes use of the \Rpackge{fdrtool} package to further calculate the associated q-values and FDR for each edge in the combined network. 
+
+<<combineNet, eval=FALSE>>=
+combinedNetwork <- tpc.fuseNetwork(allNetworks)
+@
+
+Due to large computation time, we provide the combined network R object: 
+<<>>=
+load("data/PreComputedCombNet.RData")
+@
+
+\section{Obtaining the KRAS signature}
+
+An experimental design was constructed in a way that we have two treatments ("Mock" vs "Cre"). RNA samples were collected from six biological replicates. Two RNA samples were collected from each biological replicate (these are the technical replicates). Samples were hybridized to Illumina Mousev2 BeadChips using 24 arrays (1 sample per Bead-Chip). Differential expression analysis between the two groups ("Mock" vs "Cre") was carried out using \Biocpkg{limma} Bioconductor package (Ritchie et al., 2015)
+
+<<arrayWeights, fig.width=5, fig.height=5, fig.align='center',cache=TRUE>>=
+#design matrix
+library(limma)
+groups <- as.factor(KRAStargets$Sample_Group)
+design = model.matrix(~0 + groups)
+colnames(design) = sub("groups", "", colnames(design))
+
+#aWeights Norm
+aWeights <- arrayWeights(KRASgexp,design=design)
+dotchart(aWeights,labels=KRAStargets$Sample_Name,
+         groups=as.factor(KRAStargets$Sample_Group),pch=19,
+         color= col_matrix[,"Sample_Group"],main="Array Weights")
+@
+\begin{center}
+\begin{figure}[H]
+\caption{P95 Values per Group}
+\label{fig:arrayWeights}
+\end{figure}
+\end{center}
+
+The experiment had two levels of variability. First, there is the variation between biological replicates. Secondly, there the variability within replicates, i.e. the repeat measurements made on the same RNA sample (technical replicates). Therefore, we used the limma function \texttt{duplicateCorrelation} to estimate the correlation between measurements made on the same technical replicate. The inter-technical replicate correlation was then used as an input into the linear model fit:
+
+<<fit, eval=FALSE>>=
+fit <- getfit(KRASgexp, aWeights, KRAStargets, contrast="Cre-Mock",annotation=KRASannotation)
+KRASsig <- getsighuman(fit[,c("IlluminaID","t","P.Value")], 
+                       annotTable=KRASannotTable, gexp=KRASgexp)
+@
+
+Due to large computation time, we provide the R object containing the KRAS signature and fit model:
+<<>>=
+load("data/PreComputedKRASsig.RData")
+@
+
+The initial dataset consisted of 46,235 unique probes, corresponding to 20,562 mouse genes (based on Entrez) and 19,575 mouse ID based on ENSEMBL IDs. 
+
+<<checks>>=
+sig <- fit[,c("IlluminaID","t","P.Value")]
+sigM <- merge(unique(sig), unique(KRASannotTable), by="IlluminaID", all.x=T)
+
+dim(fit) #[1] 46235     19
+length(unique(fit$ENTREZID)) #[1] 20562
+length(unique(sigM$ENSEMBL)) #[1] 19575
+@
+
+The following volcano plot shows the log2 fold-changes and -log10 p-values obtained obtained for all 46,235 unique mouse probes: 
+
+<<volcanoPlot, fig.height=4, fig.width=5, fig.align='center', warning=FALSE, cache=TRUE>>=
+fit$threshold <- as.factor(fit$P.Value <= 0.05 & abs(fit$logFC) >= 1) #for visualisation
+up <- sum(fit$P.Value <= 0.05 & fit$logFC >= 1)
+down <- sum(fit$P.Value <= 0.05 & fit$logFC <= -1)
+g = ggplot(data=fit, aes(x=logFC, y=-log10(P.Value), colour=threshold)) +
+  geom_point(alpha=0.4, size=1.75) +
+  xlim(c(-3, 3)) + ylim(c(0, 15)) +
+  xlab("log2 fold change") + ylab("-log10 p-value") +
+  annotate("text", x=-2.5, y=11, label= paste("N=",down, "\n(down-regulated)"), col="#00BFC4" , size=3, fontface=2) +
+  annotate("text", x= 2.6, y=11, label= paste("N=",up, "\n(up-regulated)") , col="#00BFC4", size=3, fontface=2 )
+plot(g)
+
+@
+\begin{center}
+\begin{figure}[H]
+\caption{Volcano plot showing the magnitude of the differential gene expression between "Mock" and "Cre". Each dot represents one probe with detectable expression in both conditions. The colored dots mark the threshold (p \textless 0.05 and log2 fold-change \up 1) for defining a gene as differentially expressed.}
+\label{fig:volcanoPlot}
+\end{figure}
+\end{center}
+
+
+Based on BiomaRt homolog gene annotations, we obtained 17,032 unique human Entrez IDs.
+
+<<checks2>>=
+nas <- which(is.na(sigM[,"hsapiens_entrezgene"]))
+length(unique(sigM$hsapiens_entrezgene)) #[1] 17032
+@
+
+After removing bad quality probes and NA ids, we obtained 16,742 human Entrez IDs. Finally, we combined multiple mouse Illumina probe IDs mapping to the same human Entrez gene ID by taking the average t-statistic of all Illumina probes. 
+
+<<>>=
+sig2 <- sigM[-nas,] #DEG is signature without the NAS
+badquality <- which(sig2$PROBEQUALITY == "Bad")
+sig2 <- sig2[-badquality,] #delete bad quality
+length(unique(sig2$hsapiens_entrezgene)) #[1] 16742
+length(KRASsig[[1]])
+@
+
+\subsection{Pathway analysis}
+
+To identify enriched pathways and gene ontologies in the KRAS signature we performed a gene set enrichment analysis using the R package \Biocpkg{HTSanalyzeR}. For the pathway analysis we used Kyoto Encyclopedia of Genes and Genomes (KEGG) and two GO
+gene set collections obtained from \Biocpkg{KEGG.db} and \Biocpkg{GO.db} R packages, respectively.
+
+<<pathwayRun, eval=FALSE>>=
+gsca <- pathwayAnalysis(fit, pvaluecutoff=0.05)
+@
+
+Due to long computation time, we provide the R object with the analysis results in the data folder:
+<<>>=
+load("data/PreComputedKRASsigPathway.RData")
+@
+
+<<>>=
+#summarize results
+HTSanalyzeR::summarize(gsca)
+@
+
+The following enrichment maps (Figure \ref{enrichmap1} and Figure \ref{enrichmap2}) help visualising the GSEA results, representing gene sets as nodes connected by edges denoting the Jaccard similarity coefficient between two gene sets. Nodes are colored by the sign of the enrichment scores. 
+
+In summary, The KRAS signature is enriched for GO terms and pathways associated to:
+\begin{itemize} 
+\item{Cell cycle checkpoints and cell cycle control: E.g. "cell cycle", "G1/S" transition of the mitotic cell cycle"}.
+\item{Events that activate signaling pathways that promote cell growth. E.g. "MAPK signaling pathway", "regulation of MAPK cascade", "p53 binding", "Toll-like receptor signaling pathway"}
+\item{reorganization of processes that are crucial to cell migration. E.g. "actin binding", "regulation of cell adhesion", "regulation of epithelial to mesenchymal transition", "cell migration"}.
+\end{itemize}
+
+<<enrichmap, message=FALSE, fig.width=8, fig.height=8, fig.show='hide'>>=
+#enrichment map
+par(mfrow=c(1,2))
+viewEnrichMap(gsca, resultName="GSEA.results",
+gscs=c("GO_BP"), allSig=FALSE, ntop=10, gsNameType="term",
+displayEdgeLabel=FALSE, layout="layout.fruchterman.reingold")
+
+viewEnrichMap(gsca, resultName="GSEA.results",
+gscs=c("GO_MF"), allSig=FALSE, ntop=10, gsNameType="term",
+displayEdgeLabel=FALSE, layout="layout.fruchterman.reingold")
+
+par(mfrow=c(1,1))
+viewEnrichMap(gsca, resultName="GSEA.results",
+gscs=c("PW_KEGG"), allSig=FALSE, ntop=20, gsNameType="term",
+displayEdgeLabel=FALSE, layout="layout.fruchterman.reingold")
+@
+
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/enrichmap-1.pdf}
+\caption{Pathway analysis of KRAS differentially expressed genes. The plot displays the enrichment map obtained by HTSAnalyzeR, for gene set collections obtained from Biological Processes (BP) and Molecular Function (MF) Gene Ontologies.}
+\label{enrichmap1}
+\end{center}
+\end{figure}
+
+\begin{center}
+\begin{figure}[H]
+\includegraphics[scale=0.8]{figure/enrichmap-2.pdf}
+\caption{Pathway analysis of KRAS differentially expressed genes. The plot displays the enrichment map obtained by using HTSAnalyzeR, for gene set collections obtained from KEGG GENES database.}
+\label{enrichmap2}
+\end{figure}
+\end{center}
+
+The following tables display the results:
+
+<<xtable2, results='asis', echo=FALSE, warning=FALSE>>=
+library(xtable)
+GO_BP <- gsca@result[["Sig.adj.pvals.in.both"]][["GO_BP"]]
+xtab<-xtable(GO_BP)
+print(xtab, floating=FALSE)
+@
+\caption{Table 2: Pathway GSEA analysis of KRAS differentially expressed genes. Obtained by with HTSAnalyzeR for gene set collections obtained from Gene Ontolgy Biological Processes (BP). The table shows significantly enriched GO terms (adjusted p-value \textless 0.05 ) according to both, the GSEA and Hypergeometric test.}
+\vspace{2 mm}
+
+<<xtable3, results='asis', echo=FALSE>>=
+library(xtable)
+GO_MF <- gsca@result[["Sig.adj.pvals.in.both"]][["GO_MF"]]
+xtab<-xtable(GO_MF)
+print(xtab, floating=FALSE)
+@
+\caption{Table 3: Pathway analysis of KRAS differentially expressed genes. Obtained by with HTSAnalyzeR for gene set collections obtained from Gene Ontology Molecular Function (MF). The table shows significantly enriched GO terms (adjusted p-value \textless 0.05 ) according to both, the GSEA and Hypergeometric test.}
+\vspace{2 mm}
+
+<<xtable4, results='asis', echo=FALSE>>=
+library(xtable)
+PW_KEGG <- gsca@result[["Sig.adj.pvals.in.both"]][["PW_KEGG"]]
+xtab<-xtable(PW_KEGG)
+print(xtab, floating=FALSE)
+@
+\caption{Table 4: Pathway GSEA analysis of KRAS differentially expressed genes. Obtained by with HTSAnalyzeR for gene set collections obtained from KEGG GENES database. The table shows significantly enriched KEGG pathways (adjusted p-value \textless 0.05 ) according to both, the GSEA and Hypergeometric test.}
+\vspace{2 mm}
+
+
+\section{Finding Master Regulators of KRAS}
+
+Master regulators of KRAS were identified with the \Rfunction{msviper} functionality of the \Biocpkg{viper} (Virtual Inference of Protein-activity by Enriched Regulon analysis) package.
+
+\subsection{KRAS null model}
+
+To account for the correlation structure between genes (gene expression is not statistically independent between genes), the null model for \Rfunction{msviper} is defined by using a set of signatures obtained after permuting the samples at random. The function \Rfunction{limmaNull} performs such process by shuffling the samples at random. \Rfunction{limmaNull} uses Limma's empirical Bayes moderated t-test to produce a numerical matrix of z-scores, with genes in rows and permutation iterations in columns, than can be used as null model for the msVIPER analysis.
+
+<<dnull, eval=FALSE>>=
+#null models
+nullmodel <- limmaNull(KRASgexp, KRAStargets, KRASannotTable, KRASannotation, nPermutations=1000)
+@
+
+Due to large computation time required to compute the null model, we provide the R object with the pre-computed null model for the KRAS signature:
+<<>>=
+load("data/PreComputedKRASnullmodel.RData")
+@
+
+\subsection {Preparing network data}
+
+To run \Biocpkg{viper} analysis, We firstly converted the \texttt{TPC-class} object to a Regulation object, and re-annotated names of factors (add gene symbol to Entrez IDs):
+
+<<TFuse2regulon, cache=TRUE>>=
+regul <- TFuse2regulon(combinedNetwork[["fusedNet"]])
+@
+
+\subsection{msVIPER analysis}
+The msVIPER analysis is performed by the \Rfunction{msviper} function. It requires the KRAS signature, the PDAC network object and the null model as arguments, and produces an object of class "msVIPER", containing the estimated enrichment for each regulon, including the Normalized Enrichment Score (NES) and p-values, as output.
+
+<<msviper, cache=TRUE>>=
+library(viper)
+mrs <- msviper(KRASsig[["statistic"]], regul, nullmodel, verbose =FALSE)
+@
+
+The top identified master regulators are shown in in Figure~\ref{plotVIPER2}:
+
+<<plotVIPER2,cache=TRUE, fig.height=9, fig.align='center', fig.show='hide'>>=
+p1 <- sort(mrs$es$p.value)
+MRs <- names(p1)[p1 < 0.01]
+plot(mrs, length(MRs))
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/plotVIPER2-1.pdf}
+\caption{msVIPER plot showing the projection of the negative (repressed, shown in blue color) and positive
+(activated, shown in red color) targets for each TF, as inferred by RTN and partial-correlation analysis when
+reverse engineering the regulatory network (vertical lines resembling a bar-code), on the KRAS gene-expression signature. The KRAS signature is represented in the-axis, where the genes were rank-sorted based on the t-statistic for the DEG test (limma analysis) from the one most down-regulated to the one most upregulated in the 'Cre' condition compared to "Mock".  The two-columns heatmap displayed on the right side of the figure
+shows the inferred differential activity (first column) and differential expression (second column), with the
+rank of the displayed genes in the KRAS signature (shown all the way to the right).}
+\label{plotVIPER2}
+\end{center}
+\end{figure}
+
+
+\section{Network comparisons}
+
+\subsection{Edge correlation between pairs of networks}
+
+We compared the derived regulons between pairs of networks. For each pairwise comparison, we computed two different quantitative metrics regulon-wise: 
+\begin{itemize}
+\item{We compared the vectors of edge weights and determined if they were significantly correlated by computing the Pearson correlation coefficient (Figure \ref{plotnet1})}
+\item{We tested the overlap between the inferred target genes (significant edges defined by q-value \textless 0.05) using Fisher's exact test (Figure \ref{plotnet2})}
+\end{itemize}
+
+<<compareNets1, cache=TRUE, results='hide'>>=
+compareRes <- compareallNetworks(allNetworks, combinedNetwork[["fusedNet"]])
+@
+
+<<compareNets2Plot, fig.width=6, fig.height=6, message=FALSE, warning=FALSE, fig.align='center', fig.show='hide'>>=
+CorPerRegDist_all <- lapply(compareRes, function(x) unlist(x[["CorPerReg_all"]]))
+CorPerRegDist_sig <- lapply(compareRes, function(x) unlist(x[["CorPerReg_sig"]]))
+FETdist <- lapply(compareRes, "[[", "FETPerReg")
+
+#compare correlation coefficient scores per Regulon
+library(ggplot2)
+library(reshape2)
+all <- melt(do.call("cbind",CorPerRegDist_all))
+all$type <- "all"
+sig <- melt(do.call("cbind",CorPerRegDist_sig))
+sig$type <- "sig"
+a <- rbind(all,sig)
+ggplot(a, aes(x=Var2, y=value, fill=type)) + 
+  geom_boxplot() + coord_flip() + xlab("network pairs") +
+  ylab("Edge Pearson correlation coeficient per regulon") +
+  ggtitle("Edge correlation")
+
+#compare regulon overlap
+a <- melt(do.call("cbind",FETdist))
+ggplot(a, aes(x=Var2, y=value)) + ylim(0,10) + 
+  geom_boxplot() + coord_flip() + xlab("network pairs") + 
+  ylab("-log10(p-value) Fisher Exact Test") +
+  xlab("") + ggtitle("Regulon overlap test")
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/compareNets2Plot-1.pdf}
+\caption{Edge weight correlation between pairs of networks. For each regulon, Pearson correlation coefficients were computing by comparing the edge z-scores between pairs of networks. The boxplots display the distribution of regulon Pearson correlation coefficients when considering all edges (orange), or when considering only the edges with significant FDR in both networks (q-value \textless 0.05) (blue).  The correlation between edge weights increases when considering only significant edges.}
+\label{plotnet1}
+\end{center}
+\end{figure}
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/compareNets2Plot-2.pdf}
+\caption{Regulon overlap between pairs of networks. Regulon overlap was computed by considering the edges with significant FDR (q-value \textless 0.05) and the p-value for the degree of overlap calculated by a Hypergeometric test.}
+\label{plotnet2}
+\end{center}
+\end{figure}
+
+
+\subsection{Network activity comparison}
+
+Since our goal has been to identify transcriptional regulators that drive the KRAS-related phenotype, a key question is whether individual networks yield comparable results to the combined network. We ran msVIPER for each individual network and compared the vectors of activity obtained from the combined network and each one of the individual networks to determine if they were significantly correlated (Figure \ref{plotnet3} and Figure \ref{plotnet4}).
+
+<<getActivity, message=FALSE, cache=TRUE, results='hide'>>=
+#compare network activity
+result <- getActivity(allNetworks, combinedNetwork[["fusedNet"]], KRASsig, nullmodel)
+pvalue.matrix <- result[["pvalue.matrix"]]
+NES.matrix <- result[["NES.matrix"]]
+@
+
+The figure below shows, for each one of the 55 master regulators, how the normalized enrichment scores (NES) and the associated p-values obtained by msVIPER analysis are in good agreement for all individual networks when compared to the combined network. As expected, networks with higher number of samples (ICGC and TCGA cohorts) are in better agreement with the combined network result. Nonetheless, the power of the analysis was improved by combining the seven different cohorts:
+
+<<getActivityplot, fig.width=5, fig.height=6, fig.align='center', fig.show='hide'>>=
+pheatmap(as.matrix(pvalue.matrix[rownames(pvalue.matrix) %in% MRs,]), 
+         scale="none",cluster_rows=F, cluster_cols=F)
+pheatmap(as.matrix(NES.matrix[rownames(NES.matrix) %in% MRs,]), 
+         scale="none",cluster_rows=F, cluster_cols=F)  
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/getActivityplot-1.pdf}
+\caption{Agreement of p-values obtained by msVIPER analysis for the top 55 master regulators in all seven individual networks and in the combined fused Network (comb). Networks with higher number of samples (ICGC and TCGA cohorts) are in better agreement with the combined network result. -log10(p-values) are colored from the smallest p-values (red) to the largest (blue). White cells in the heatmap correspond to missing values, these exist for master regulators with no inferred edges at a FDR \textless 0.05.}
+\label{plotnet3}
+\end{center}
+\end{figure}
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.8]{figure/getActivityplot-2.pdf}
+\caption{Agreement of normalized enrichment scores (NES) obtained by msVIPER analysis for the top 55 master regulators in all seven individual networks and in the combined fused Network (comb). Networks with higher number of samples (ICGC and TCGA cohorts) are in better agreement with the combined network result. Negative NES scores are colored in blue and positive NES scores in red. White cells in the heatmap correspond to missing values, these exist for master regulators with no inferred edges at a FDR \textless 0.05.}
+\label{plotnet4}
+\end{center}
+\end{figure}
+
+\section{Community search algorithm to identify core pathways}
+
+To identify communities within the top 55 master regulators, we used the Fastgreedy algorithm implemented in the R function \Rfunction{fastgreedy.community} of the 
+\Rpackage{igraph} package.This function tries to find dense subgraph, also called
+communities in graphs via directly optimizing a modularity score using the Clauset-Newman-Moore algorithm (Clauset et al., 2004).
+
+The analysis reaveled 3 major communities, corresponding to 27 Regulators and their target genes.
+
+<<plotcom, cache=TRUE, results='hide', message=FALSE, eval=FALSE>>=
+res <- plotcom(combinedNetwork[["fusedNet"]],MRs)
+names(res) <- c("CellCycle","Hedgehog","Notch")
+#save(res,p1,MRs, mrs, file="PreComputed3com.RData")
+@
+
+for reproducibility, we load the precomputed "comunities" R object that was saved at the time of producing these results
+
+<<>>=
+load("data/PreComputed3com.RData")
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.5]{data/figure2B.png}
+\caption{Visual representation of MRs identified with msVIPER analysis (p \textless 0.01). The nodes in the networks represent the 55 master regulators (large dots) and the corresponding inferred targets (smaller dots). The edges in the network represent the regulatory relationship between regulators and the inferred targets. The colors highlight the community structure of the network identified by via greedy optimization of modularity. The three groups of nodes correspond to a total of 27 master regulators and represent three distinct disease processes enriched for cell cycle (pink), Hedgehog/Wnt signaling (blue) and Notch signaling (green) pathways.  }
+\end{center}
+\end{figure}
+
+\subsection{Pathway analysis of the identified TF signatures}
+
+In the following section, we performed a pathway analysis of these 3 communities using the R package \Biocpkg{clusterProfiler} to identify predominant biological pathways enriched in the three gene lists. Pathway analysis was performed using pathway annotations provided by the Kyoto Encyclopedia of Genes and Genomes (KEGG) which is available via the \Biocpkg{KEGG.db} and \Biocpkg{clusterProfiler} R packages.
+
+<<keggplot, eval=FALSE>>=
+geneids <- lapply(res, getentrez)
+universe <- getentrez(rownames(combinedNetwork[["fusedNet"]]))
+
+#for barplot
+kk <- lapply(geneids, Keggplot, universe=universe, pvalueCutoff=0.01)
+kk_reactome <- lapply(geneids, reactomePAplot, universe=universe, pvalueCutoff=0.01)
+
+#fpr compare cluster plot
+names(geneids) <- c("group1","group2","group3")
+ck <- compareCluster(geneids, fun='enrichKEGG', organism="human")
+@
+
+Due to the large computation time we provide the pathway analysis result as an R object
+
+<<>>=
+load("data/PreComputedMRspathwayAnlaysis.RData")
+@
+
+We visualize the enrichment result in a barplot. The barplot shows all enriched categories in each group. The x-axis represents the enrichment result p-value -log10(p.adjust) after p-value adjustment. P-value adjustment was performed with the Benjamini & Hochberg (FDR) method.
+
+<<MRspathwayBarplot,fig.align='center', fig.width=15, fig.height=5, fig.show='hide', message=FALSE, warning=FALSE>>=
+multiplot(barplotkk(kk[[1]], main="group1"), 
+          barplotkk(kk[[2]], main="group2"), 
+          barplotkk(kk[[3]], main="group3"),cols=3)
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[scale=0.5]{figure/MRspathwayBarplot-1.pdf}
+\caption{KEGG Pathway enrichment analysis of the genes in each of the three disease processes. The barplot shows all enriched categories at a adjusted p-value \textless 0.01.}
+\end{center}
+\end{figure}
+
+There are clear differences in the most enriched categories per group. For example:
+\begin{itemize}
+\item{Group1 is enriched in genes involved with Cell Cycle and DNA-replication controlling functions. }
+\item{Group2 is enriched in ECM−receptor interaction, Focal adhesion and "Hedgehog/Wnt" signaling genes. } 
+\item{Group3 is enriched in Focal adhesion and Notch signaling genes.}
+\end{itemize}
+
+Group2 and Group3 show some similar enriched pathways, such as "Focal adhesion" and "Pathways in cancer". The following "grouped" plot shows more clearly the different enriched pathways between groups. The total number of identified genes in each category are provided as numbers in parentheses in the x-axis. The dots in the plot are color-coded based on their corresponding FDR adjusted p-values. Color gradient ranging from red to blue correspond to in order of increasing p-values. That is, red indicate low p-values (high enrichment), and blue indicate high p-values (low enrichment). The size of the dots correspond to the "Gene Ratio" which corresponds to the proportion of genes from each group in each KEGG pathway.
+
+<<MRspathwayGroupPlot, fig.align='center', fig.show='hide'>>=
+plot(ck, showCategory=10)
+@
+
+<<echo=FALSE, eval=FALSE>>=
+#save image
+#save(kk, kk_reactome, ck, file="PreComputedMRspathwayAnlaysis.Rda")
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/MRspathwayGroupPlot-1.pdf}
+\caption{KEGG Pathway enrichment analysis of the genes in each of the three disease processes. The plot shows all enriched categories at FDR adjusted p-value \textless 0.01 per group. The total number of identified genes in each group are provided as numbers in parentheses in the x-axis. The dots in the plot are color-coded based on their corresponding FDR adjusted p-values. The size of the dots correspond to the "Gene Ratio" which corresponds to the proportion of genes from each group in each category of KEGG pathways.}
+\end{center}
+\end{figure}
+
+
+The following tables display the results:
+
+<<xtable5, results='asis', echo=FALSE, warning=FALSE, message=FALSE>>=
+library(xtable)
+options(stringsAsFactors = FALSE)
+a <- rbind(data.frame(group="group 1",summary(kk[[1]])[,c(1,2,3,6)], row.names=NULL),
+      data.frame(group="",ID="",Description="",GeneRatio="",p.adjust=""),
+      data.frame(group="group 2",summary(kk[[2]])[,c(1,2,3,6)], row.names=NULL),
+      data.frame(group="",ID="",Description="",GeneRatio="",p.adjust=""),
+      data.frame(group="group 3",summary(kk[[3]])[,c(1,2,3,6)], row.names=NULL))
+print(xtable(a), floating=FALSE)
+@
+\caption{Table 5: KEGG Pathway enrichment analysis of the genes in each of the three disease processes. Obtained by with ClusterProfiler for gene set collections obtained from KEGG database. The table shows significantly enriched KEGG pathways (FDR adjusted p-value \textless 0.01) according the Hypergeometric test.}
+\vspace{2 mm}
+
+
+\clearpage
+
+\part{Characterizing Pancreatic Cancer subtypes}
+
+\section{Subtype analysis}
+
+\subsection{PDAC subtypes for the TCGA and ICGC cohorts}
+
+In order to detect the similarity between tumor samples based on the activity of the 27 master regulators we used the methodology developed be Alvarez et al 2016. We took the gene expression matrix for the TCGA and ICGC cohorts and applied the function \Biocpkg{viper} from the \Biocpkg{viper} package to perform a single-sample analysis and compute a matrix with activity scores for each one of the 27 regulators. The matrix of 27 activity scores for each tumor sample was then used to compute the similarity of between different tumor samples.
+
+<<runVip, message=FALSE, results='hide', cache=TRUE, eval=FALSE>>=
+
+#run
+TFs2cluster <- unlist(lapply(res, function(x) {x[x %in% MRs]}), use.names=F)
+
+TCGAact <- runViper(TCGAseq.Gexp,net=combinedNetwork[["fusedNet"]], MR=TFs2cluster)
+TCGA.distance <- signatureDistance(TCGAact, scale=F)
+
+ICGCact <- runViper(ICGCarray.Gexp,net=combinedNetwork[["fusedNet"]], MR=TFs2cluster)
+ICGC.distance <- signatureDistance(ICGCact, scale=F)
+
+#save(TFs2cluster, TCGAact, TCGA.distance, ICGCact, ICGC.distance, file="PreComputedvipermat.RData")
+@
+
+The analysis above was produced with viper (version 1.8.0). For reproducibility we included the R objects to be used downstream of analysis.
+
+<<>>=
+load("data/PreComputedvipermat.RData")
+@
+
+\subsection{Evaluation of the best number of clusters}
+
+The "signatureDistance" class object can be used to perform cluster analysis of the samples.
+
+<<signatureDistance, fig.show='hide'>>=
+par(mfrow=c(1,2))
+layout(rbind(c(4,3,8,7),c(2,1,6,5)), 
+       widths = c(1,2,1,2), heights = c(1,2), respect = FALSE)
+
+heatmap(as.matrix(as.dist(TCGA.distance)), Rowv = as.dendrogram(hclust(as.dist(TCGA.distance),
+method = "average")), symm = T, labRow="",labCol="", main="TCGA")
+
+heatmap(as.matrix(as.dist(ICGC.distance)), Rowv = as.dendrogram(hclust(as.dist(ICGC.distance),
+method = "average")), symm = T, labRow="",labCol="", main="ICGC")
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/signatureDistance-1.pdf}
+\caption{Heatmap showing the similarity between the samples in the TCGA cohort as measured by 'signature distance' between the VIPER-inferred transcriptional regulator's activity profiles.}
+\end{center}
+\end{figure}
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/signatureDistance-2.pdf}
+\caption{Heatmap showing the similarity between the samples in the ICGC cohort as measured by 'signature distance' distance between the MR’s activity profiles}
+\end{center}
+\end{figure}
+
+A high average silhouette widths were obtained for three clusters. Therefore we continue the analysis using three clusters as the optimum number of clusters.
+
+<<silhouette, fig.width=10, fig.height=5>>=
+
+par(mfrow=c(1,2))
+cormat <- scale(TCGA.distance)
+distance <- as.dist(cormat)
+fit1 <- hclust(as.dist(cormat),method = "average")
+avsi <- sapply(2:8, function(i) {a <- silhouette(cutree(fit1, i), distance); mean(a[,3])})
+plot(2:8, avsi, type="b", xlab="Number of Clusters", ylab="Average silhouette width", main="TCGA")
+
+cormat <- scale(ICGC.distance)
+distance <- as.dist(cormat)
+fit2 <- hclust(as.dist(cormat),method = "average")
+avsi <- sapply(2:8, function(i) {a <- silhouette(cutree(fit2, i), distance); mean(a[,3])})
+plot(2:8, avsi, type="b", xlab="Number of Clusters", ylab="Average silhouette width", main="ICGC")
+@
+
+
+<<tgroups>>=
+#get the groups
+tgroupsTCGA <- cutree(fit1, k=3)
+tgroupsICGC <- cutree(fit2, k=3)
+
+#fixnames
+bcr_aliquot_uuid = sapply(names(tgroupsTCGA), 
+function(x) {paste(strsplit(strsplit(x, "UNCID")[[1]][2],
+                            "\\.")[[1]][2:6],collapse="-")})
+names(tgroupsTCGA) <- as.character(bcr_aliquot_uuid)
+
+#save(tgroupsICGC, tgroupsTCGA, file="tgroups.Rda")
+@
+
+
+<<group_labels, fig.align='center',fig.height=3, fig.width=5>>=
+COL = colorRampPalette(rev(brewer.pal(n = 7, name ="RdGy")))(100)
+
+#ICGC
+tgroups <- factor(tgroupsICGC)
+levels(tgroups) <- c("CellCycle","Notch","Hedgehog")
+act <- ICGCact
+tgroups <- sort(tgroups)
+annotation_colors <- list("groups"=c("CellCycle"="deeppink",
+                                     "Hedgehog"="royalblue", "Notch"="springgreen"))          
+pheatmap(act[,names(tgroups)], scale="row", cluster_cols = F, 
+         annotation_col = data.frame("groups"=factor(tgroups)), 
+         annotation_colors=annotation_colors,
+         show_colnames=FALSE, color = COL)
+
+
+#TCGA
+#fixnames
+bcr_aliquot_uuid = sapply(colnames(TCGAact), 
+function(x) {paste(strsplit(strsplit(x, "UNCID")[[1]][2],
+                            "\\.")[[1]][2:6],collapse="-")})
+colnames(TCGAact) <- as.character(bcr_aliquot_uuid)
+rm(bcr_aliquot_uuid)
+
+act <- TCGAact
+tgroups <- factor(tgroupsTCGA)
+levels(tgroups) <- c("Hedgehog","CellCycle","Notch")
+tgroups <- sort(tgroups)
+annotation_colors <- list("groups"=c("CellCycle"="deeppink","Hedgehog"="royalblue", "Notch"="springgreen"))          
+pheatmap(act[,names(tgroups)], scale="row", cluster_cols = F, 
+         annotation_col = data.frame("groups"=factor(tgroups)), 
+         annotation_colors=annotation_colors,
+         show_colnames=FALSE,
+         color = COL)
+@
+
+
+\subsection{Comparing the different subtypes with previous datasets}
+
+We used the classification obtained by Bailey et al., 2016 to further evaluate to which classes are enriched in the three regulatory programs.
+
+<<subtypeCompare, fig.align='center', fig.height=4, fig.width=6, fig.show='hide'>>=
+tgroups <- factor(tgroupsICGC)
+levels(tgroups) <- c("CellCycle","Notch","Hedgehog")
+
+a <- data.frame("BaileyClasses"=clinicalICGC$ICGCsubtypes, "group"=tgroups[match(rownames(clinicalICGC),names(tgroupsICGC))])
+data2plot <- melt(table(a))
+
+bp1 <- ggplot(data2plot, aes(x=group, y=value, fill=BaileyClasses)) +
+  geom_bar(stat="identity", color="black", position = "fill") + xlab("") + ylab("Proportion of samples") +
+  theme_minimal() + theme(axis.text.y = element_text(size=15), 
+  axis.text.x = element_text(size=15),  axis.title=element_text(size=15))
+
+#bp2 <- ggplot(data2plot, aes(x=group, y=value, fill=BaileyClasses)) +
+#  geom_bar(stat="identity", color="black") + xlab("") + ylab("Number of #samples") +
+#  theme_minimal() + theme(axis.text.y = element_text(size=15), 
+#  axis.text.x = element_text(size=15),  axis.title=element_text(size=15))
+#multiplot(bp1, bp2)
+
+plot(bp1)
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/subtypeCompare-1.pdf}
+\caption{Comparison of disease regulatory processes identified in this study with the tumor subtypes identified previously in Bailey et al., 2016. The Hedgehog/Wnt process is over-represented by samples from the Squamous subtype (p-value=1.1e-8), the cell cycle process by samples from the Immunogenic subtype (p-value=7.8e-12) and the Notch by samples from the ADEX (p-value=8.2e-8) and Pancreatic Progenitor (p-value=6.1e-8) subtypes. The p-values for the degree of overlap calculated by a Hypergeometric test.}
+\end{center}
+\end{figure}
+
+We computed the enrichment p-value of each overlap using the hipergeometric text:
+
+<<>>=
+phyperPvalue <- function(group1Name, group2Name) {
+	tgroups <- factor(tgroupsICGC)
+	levels(tgroups) <- c("CellCycle","Notch","Hedgehog")
+	a <- data.frame("BaileyClasses"=clinicalICGC$ICGCsubtypes, 
+	                "group"=tgroups[match(rownames(clinicalICGC),
+	                                      names(tgroupsICGC))])
+	a <- a[!is.na(a$BaileyClasses),]
+	group1 <- sum(a$group == group1Name)
+	group2 <- sum(a$BaileyClasses == group2Name)
+	overlap <- sum(a$group == group1Name & a$BaileyClasses == group2Name)
+	Totalnrgenes <- nrow(a)
+	phyper (overlap, group2, Totalnrgenes-group2, group1, lower.tail=F)
+}
+
+sapply(c("CellCycle","Hedgehog","Notch"),
+	function (x) {
+		sapply(c("ADEX","Immunogenic","Squamous", 
+		         "PancreaticProgenitor"),
+		function (y) {phyperPvalue(x,y)})})
+@
+
+The hedgehog process is over-represented by samples from the Squamous subtype (p-value=1.1e-8), the cell cycle process by samples from the Immunogenic subtype (p-value=7.8e-12) and the Notch by samples from the ADEX (p-value=8.2e-8) and Pancreatic Progenitor (p-value=6.1e-8) subtypes. 
+
+\section{Survival analysis}
+
+The R objects included with this data supplment, contain the tables with patient information for the TCGA and ICGC cohorts
+
+<<>>=
+survmatICGC <- mergewithGroups(survmatICGC, tgroupsICGC, groupLabels=c("CellCycle","Notch","Hedgehog"))
+survmatTCGA <- mergewithGroups(survmatTCGA, tgroupsTCGA, groupLabels=c("Hedgehog","CellCycle","Notch"))
+
+head(survmatICGC)
+head(survmatTCGA)
+@
+
+We eliminated from the survival analysis 2 PDAC samples from the ICGC cohort and 1 sample from the TCGA cohort for which there was no available survival time data:
+
+<<>>=
+#ICGC: eliminated 2 samples
+rownames(clinicalICGC)[is.na(clinicalICGC$donor_survival_time)]
+
+#TCGA: eliminated 1 sample
+rownames(clinicalTCGA)[is.na(clinicalTCGA$Overall.Survival..Months.)]
+@
+
+Summary statistics for Overall Survival (OS) are:
+ 
+<<>>=
+summary(survmatICGC$Overall.Survival.Months)
+summary(survmatTCGA$Overall.Survival.Months)
+@
+
+We plot OS for all cases.
+<<OSplots, fig.width=8, fig.height=4>>=
+ICGC.os.fit <- survfit(Surv(survmatICGC$Overall.Survival.Months, survmatICGC$Overall.Survival.Status) ~ 1)
+ICGC.os.fit
+
+TCGA.os.fit <- survfit(Surv(survmatTCGA$Overall.Survival.Months, survmatTCGA$Overall.Survival.Status) ~ 1)
+TCGA.os.fit
+
+par(mfrow=c(1,2))
+plot(ICGC.os.fit, main="Kaplan-Meier estimate for ICGC\nwith 95% confidence bounds",
+xlab="time [months]", ylab="survival", cex.main=0.8)
+plot(TCGA.os.fit, main="Kaplan-Meier estimate for TCGA\nwith 95% confidence bounds",
+xlab="time [months]", ylab="survival", cex.main=0.8)
+@
+
+\subsection{Survival differences in the ICGC cohort}
+
+We investigated survival differences between the three subgroups of tumours in the ICGC cohort. 
+
+<<>>=
+survmat <- survmatICGC
+table(survmat$groups)
+@
+
+The median Overall.Survival.Months differed between the three tumour subgroups.
+
+<<>>=
+library(rms)
+ss <- Surv(survmat$Overall.Survival.Months,survmat$Overall.Survival.Status)
+fit <- npsurv(ss ~ groups, data=survmat)
+fit
+@
+
+We test the significance of this survival difference using the log-rank test.
+
+<<ICGCsurvplot, fig.width=5, fig.height=5, fig.show='hide'>>=
+res1 <- survdiff(ss ~ groups, data=survmat)
+p1 <- 1-pchisq(res1$chisq,2)
+res1
+p1
+
+ntab = table(survmat$groups)
+txtlow = sprintf("%s (n=%d)", names(ntab)[1], ntab[1])
+txtmed = sprintf("%s (n=%d)", names(ntab)[2], ntab[2])
+txthigh = sprintf("%s (n=%d)", names(ntab)[3], ntab[3])
+
+colours <- c("deeppink", "royalblue", "mediumseagreen")
+survplot(fit, conf="none", n.risk=TRUE, col=colours, 
+         xlab="Overall survival [months]", lwd=3,las=1, lty=1)
+legend("topright", c(txtlow, txtmed, txthigh), col=colours, lwd=2)
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/ICGCsurvplot-1.pdf}
+\caption{Kaplan–Meier survival curves of the different tumor subgroups using the ICGC cohort. Numbers of subjects at risk at the start of each time interval are shown above the x-axis.}
+\end{center}
+\end{figure}
+
+Here we use multivariate Cox-hazard regression to assess if this result holds up when corrected for classical prognostic factors: gender, age and tumour stage at diagnosis.
+
+In the following analysis we use the anova() function to produce a sequential analysis of deviance table for the fitted model. Variables are added sequentially to the model in the order Gender, Age, Tumour.Stage, and finally groups. The p-value shows how significantly each variable contributes given the previously added variables. 
+
+<<>>=
+## Cox-hazard model
+model <- coxph(ss ~ Gender + Age + Tumour.Stage + groups, data=survmat)
+summary(model)
+anova(model)
+@
+
+In summary, stratifying patients by tumour subgroup of disease process is a significant predictor of OS, independent of covariates including gender, age and tumour stage.
+
+\subsection{Survival differences in the TCGA cohort}
+
+We investigated survival differences between the three subgroups of tumours in the TCGA cohort. 
+
+<<>>=
+survmat <- survmatTCGA 
+table(survmat$groups)
+@
+
+The median Overall.Survival.Months differed between the three tumour subgroups.
+
+<<>>=
+fit <- npsurv(Surv(survmat$Overall.Survival.Months, 
+                   survmat$Overall.Survival.Status) ~ survmat$groups)
+fit
+@
+
+First, we group the tumour stages into I - IV to increase the number of samples in each category, otherwise the first level ("Stage I") only contains 1 patient and the Cox proportional hazards regression model will not fit the data properly:
+<<>>=
+table(survmat$Tumour.Stage)
+survmat$Tumour.Stage <- as.character(survmat$Tumour.Stage)
+tumdic <- c("Stage I"="I",  "Stage IA"="I", "Stage IB"="I", "Stage IIA"="IIA",
+ "Stage IIB" = "IIB", "Stage III"="III" , "Stage IV"= "IV","[Unknown]"="[Unknown]")
+survmat$Tumour.Stage <- tumdic[survmat$Tumour.Stage]
+survmat$Tumour.Stage <- factor(survmat$Tumour.Stage, levels=c("I","IIA","IIB","III","IV"))
+table(survmat$Tumour.Stage)
+@
+
+Using a multivariate Cox-hazard regression analysis we noticed a strong effect on the survival rates due to the different tretaments: 
+
+<<>>=
+model <- coxph(Surv(survmat$Overall.Survival.Months, 
+                    survmat$Overall.Survival.Status) ~ Gender + 
+                 Age + Tumour.Stage +  Adjuvant.Postoperative.radiotherapy + 
+                 Adjuvant.Postoperative.Targeted.Therapy + groups, data= survmat)
+anova(model)
+@
+
+We split the cohorts into "treated" and "non-treated" based on the Adjuvant.Postoperative.Targeted.Therapy labels. We can see that there is some effect on the treatment: 
+
+<<TCGAsurvplot, fig.width=8, fig.height=4, fig.show='hide'>>=
+par(mfrow=c(1,2))
+ss <- Surv(survmat$Overall.Survival.Months, survmat$Overall.Survival.Status)
+
+ntab = table(survmat$groups, survmat$Adjuvant.Postoperative.Targeted.Therapy)
+txtlowYES = sprintf("%s (n=%d)", rownames(ntab)[1], ntab[1,"YES"])
+txtmedYES = sprintf("%s (n=%d)", rownames(ntab)[2], ntab[2,"YES"])
+txthighYES = sprintf("%s (n=%d)", rownames(ntab)[3], ntab[3,"YES"])
+txtlowNO = sprintf("%s (n=%d)", rownames(ntab)[1], ntab[1,"NO"])
+txtmedNO = sprintf("%s (n=%d)", rownames(ntab)[2], ntab[2,"NO"])
+txthighNO = sprintf("%s (n=%d)", rownames(ntab)[3], ntab[3,"NO"])
+
+colours <- c("deeppink", "royalblue", "mediumseagreen")
+
+fit <- npsurv(ss ~ survmat$groups, subset= survmat$Adjuvant.Postoperative.Targeted.Therapy=="YES") 
+survplot(fit, conf="none", n.risk=TRUE, col=colours, 
+         xlab="Overall survival [months]", lwd=3,las=1, lty=1, main="treated")
+legend("topright", c(txtlowYES, txtmedYES, txthighYES), col=colours, lwd=2, cex=0.5)
+
+fit <- npsurv(ss ~ survmat$groups, subset=survmat$Adjuvant.Postoperative.Targeted.Therapy=="NO") 
+survplot(fit, conf="none", n.risk=TRUE, col=colours,
+         xlab="Overall survival [months]", lwd=3,las=1, lty=1, main="non-treated")
+legend("topright", c(txtlowNO, txtmedNO, txthighNO), col=colours, lwd=2, cex=0.5)
+@
+
+\begin{figure}[H]
+\begin{center}
+\includegraphics[]{figure/TCGAsurvplot-1.pdf}
+\caption{Kaplan–Meier survival curves of the different tumor subgroups using the TCGA cohort for subsets of individual that did or did not receive adjuvant targeted therapy treatment. Numbers of subjects at risk at the start of each time interval are shown above the x-axis.}
+\end{center}
+\end{figure}
+
+
+We tested the interaction formally:
+
+<<>>=
+interacmodelTCGA <- coxph(ss ~ Gender + Age + Tumour.Stage + Adjuvant.Postoperative.radiotherapy +
+groups*Adjuvant.Postoperative.Targeted.Therapy, data=survmat)
+@
+
+The obtained p-values are significant for the hedgehog group compared to the Cell Cycle group. The prognosis is worse only if the patientsin the Hedgehog group are not treated, which means that targeted treatment would be indicated for this group of patients.
+
+<<>>=
+anova(interacmodelTCGA)
+summary(interacmodelTCGA)
+@
+
+Hazard ratios are different for the two situations
+
+<<TCGA_Hazard_plot, fig.width=8, fig.height=4, warning=FALSE>>=
+par(mfrow=c(1,2))
+rm(groups)
+
+attach(survmat)
+d <- datadist(survmat)
+options(datadist="d")
+fit1 = cph(ss ~ Gender + Age + Tumour.Stage + groups, survmat, x=T, y=T, 
+           subset=Adjuvant.Postoperative.Targeted.Therapy=="YES")
+plot(summary(fit1), col=c("orange", "gold", "blue"))
+
+fit1 = cph(ss ~ Gender + Age + Tumour.Stage + groups, survmat, x=T, y=T, 
+           subset=Adjuvant.Postoperative.Targeted.Therapy=="NO")
+plot(summary(fit1), col=c("orange", "gold", "blue"))
+detach(survmat)
+@
+
+We can also examine the same effect of targeted treatment, by plotting the survival curves before and after target therapy separately for each group:
+
+<<TCGAsurv_targetedTherapy, fig.width=12, fig.height=5>>=
+par(mfcol=c(1,3))
+for (groupName in c("CellCycle","Hedgehog","Notch") ) {
+
+  #log-rank model for targted-therapy
+  d <- survmat[survmat$groups==groupName,]
+  d <- d[d$Adjuvant.Postoperative.Targeted.Therapy %in% c("YES","NO"),]
+  d$Adjuvant.Postoperative.Targeted.Therapy <- factor(d$Adjuvant.Postoperative.Targeted.Therapy, levels=c("YES","NO"))
+  attach(d)
+  ss <- Surv(Overall.Survival.Months,Overall.Survival.Status)
+  res1 <- survdiff(ss ~ Adjuvant.Postoperative.Targeted.Therapy, data=d)
+  p2 <- 1-pchisq(res1$chisq,1) #1 degree of freendom
+
+  #plot with survplot
+  fit <- npsurv(ss ~ Adjuvant.Postoperative.Targeted.Therapy)
+  colours <- c("darkorange2", "darkolivegreen")
+  survplot(fit, conf="none", n.risk=T, col=colours, xlab="Overall survival [months]", lwd=3,las=1, lty=1)
+  title(main=paste(groupName, "\nTarget.Therapy"))
+
+  #write p-value
+  if (groupName!="Hedgehog") {p2 <- round(p2,3)}else{p2 <- round(p2, 9)}
+  if (groupName=="Notch") {text(15, 0.2, paste0("p=", p2))}
+  if (groupName == "CellCycle"){text(10, 0.2, paste0("p=", p2))}
+  if  (groupName == "Hedgehog"){text(30, 0.2, paste0("p=", p2))}
+  detach(d)
+
+  #legend
+  ntab = table(d$Adjuvant.Postoperative.Targeted.Therapy)
+  txtlow = sprintf("treated (n=%d)", ntab[1])
+  txthigh = sprintf("non-treated (n=%d)",ntab[2])
+  legend("topright", c(txtlow, txthigh), col=colours, lwd=2)
+}
+@
+
+\section{References}
+
+Alvarez, M. J. et al. Inferring global protein activity profiles by network based analysis of gene expression signatures. Manuscript in preparation.
+
+Anders, S. & Huber, W. Differential expression analysis for sequence count data. Genome Biol 11, R106, doi:10.1186/gb-2010-11-10-r106 (2010).
+
+Badea, L., Herlea, V., Dima, S. O., Dumitrascu, T. & Popescu, I. Combined gene expression analysis of whole-tissue and microdissected pancreatic ductal adenocarcinoma identifies genes specifically overexpressed in tumor epithelia. Hepatogastroenterology 55, 2016-2027 (2008).
+
+Bailey, P. et al. Genomic analyses identify molecular subtypes of pancreatic cancer. Nature 531, 47-52, doi:10.1038/nature16965 (2016).
+
+Carro, M. S. et al. The transcriptional network for mesenchymal transformation of brain tumours. Nature 463, 318-25 (2010).
+
+Castro, M. A. et al. Regulators of genetic risk of breast cancer identified by integrative network analysis. Nat Genet 48, 12-21, doi:10.1038/ng.3458 (2016).
+
+Cingolani, P. et al. A program for annotating and predicting the effects of single nucleotide polymorphisms, SnpEff: SNPs in the genome of Drosophila melanogaster strain w1118; iso-2; iso-3. Fly (Austin) 6, 80-92, doi:10.4161/fly.19695 (2012).
+
+Clauset, A., Newman, M. E. & Moore, C. Finding community structure in very large networks. Phys Rev E Stat Nonlin Soft Matter Phys 70, 066111, doi:10.1103/PhysRevE.70.066111 (2004).
+
+Collisson, E. A. et al. Subtypes of pancreatic ductal adenocarcinoma and their differing responses to therapy. Nat Med 17, 500-503, doi:10.1038/nm.2344 (2011).
+9	Bailey, P. et al. Genomic analyses identify molecular subtypes of pancreatic cancer. Nature 531, 47-52, doi:10.1038/nature16965 (2016).
+
+Donahue, T. R. et al. Integrative survival-based molecular profiling of human pancreatic cancer. Clin Cancer Res 18, 1352-1363, doi:10.1158/1078-0432.CCR-11-1539 (2012).
+
+Edgar R, Domrachev M, Lash AE. Gene Expression Omnibus: NCBI gene expression and hybridization array data repository. Nucleic Acids Res. 2002;30(1):207–10.
+
+Expression Project for Oncology (expO) seeks to integrate longitudinal clinical annotation with gene expression data for a unique and powerful portrait of human malignancies, providing critical perspective on diagnostic markers, prognostic indicators, and therapeutic targets., < https://expo.intgen.org/geo/home.do> (2015).
+
+Fletcher, M. N. et al. Master regulators of FGFR2 signalling and breast cancer risk. Nat Commun 4, 2464, doi:10.1038/ncomms3464 (2013).
+
+Gautier, L., Cope, L., Bolstad, B. M. & Irizarry, R. A. affy--analysis of Affymetrix GeneChip data at the probe level. Bioinformatics 20, 307-315, doi:10.1093/bioinformatics/btg405 (2004).
+
+Irizarry RA, Hobbs B, Collin F, Beazer-Barclay YD, Antonellis KJ, Scherf U, Speed TP. Exploration, normalization, and summaries of high density oligonucleotide array probe level data. Biostatistics (2003).
+
+Johnson WE, Li C, Rabinovic A. Adjusting batch effects in microarray data using empirical bayes methods. Biostatistics, 8(1):118–127, 2007
+
+Opgen-Rhein, R. & K. Strimmer, K. Accurate ranking of differentially expressed genes by a distribution-free shrinkage approach. Statist. Appl. Genet. Mol. Biol. 6:9 (2007). 
+
+Pei, H. et al. FKBP51 affects cancer cell response to chemotherapy by negatively regulating Akt. Cancer Cell 16, 259-266, doi:10.1016/j.ccr.2009.07.016 (2009).
+
+Ritchie, M. E. et al. limma powers differential expression analyses for RNA-sequencing and microarray studies. Nucleic Acids Res 43, e47, doi:10.1093/nar/gkv007 (2015).
+
+Schafer, J. & Strimmer, K. A shrinkage approach to large-scale covariance matrix estimation and implications for functional genomics. Stat Appl Genet Mol Biol 4, Article32, doi:10.2202/1544-6115.1175 (2005).
+
+Stouffer, S. A., Edward A. Suchman, Leland C. DeVinney, Shirley A. Star, and Robin M. Williams, Jr. Studies in Social Psychology in World War II: The American Soldier. Vol. 1, Adjustment During Army Life.,  (Princeton University Press., 1949).
+
+Strimmer, K. fdrtool: a versatile R package for estimating local and tail area-based false discovery rates. Bioinformatics 24, 1461-1462, doi:10.1093/bioinformatics/btn209 (2008).
+
+The Cancer Genome Atlas Data Portal, <http://cancergenome.nih.gov> (2015).
+
+Waddell, N. et al. Whole genomes redefine the mutational landscape of pancreatic cancer. Nature 518, 495-501, doi:10.1038/nature14169 (2015).
+
+\section{Session Info}
+
+<<sessionInfo>>=
+sessionInfo()
+@ 
+
+\end{document}
