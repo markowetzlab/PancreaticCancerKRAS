@@ -21,5 +21,5 @@
                       
  
  Technical issues :
- inide the code you will find the link to download the data . However in somes cases this way doesn't work. In this case it,s sould be necessary to downloand  
+ inside the code you will find the link to download the data . However in somes cases this way doesn't work. In this case it,s sould be necessary to downloand  
  manually the data.
